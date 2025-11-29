@@ -1,0 +1,119 @@
+services:
+  # etcd cluster for distributed locking and metadata coordination
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.9
+    container_name: etcd
+    command:
+      - etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=etcd-cluster-1
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - file-metadata-network
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Go file server nodes
+  file-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: file-server-1
+    environment:
+      - NODE_ID=server-1
+      - ETCD_ENDPOINTS=etcd:2379
+      - GRPC_PORT=50051
+      - HTTP_PORT=8081
+    ports:
+      - "50051:50051"
+      - "8081:8081"
+    volumes:
+      - .:/app
+    networks:
+      - file-metadata-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command: ["go", "run", ".", "-node-id=server-1", "-grpc-port=50051", "-http-port=8081"]
+
+  file-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: file-server-2
+    environment:
+      - NODE_ID=server-2
+      - ETCD_ENDPOINTS=etcd:2379
+      - GRPC_PORT=50052
+      - HTTP_PORT=8082
+    ports:
+      - "50052:50052"
+      - "8082:8082"
+    volumes:
+      - .:/app
+    networks:
+      - file-metadata-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command: ["go", "run", ".", "-node-id=server-2", "-grpc-port=50052", "-http-port=8082"]
+
+  file-server-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: file-server-3
+    environment:
+      - NODE_ID=server-3
+      - ETCD_ENDPOINTS=etcd:2379
+      - GRPC_PORT=50053
+      - HTTP_PORT=8083
+    ports:
+      - "50053:50053"
+      - "8083:8083"
+    volumes:
+      - .:/app
+    networks:
+      - file-metadata-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command: ["go", "run", ".", "-node-id=server-3", "-grpc-port=50053", "-http-port=8083"]
+
+  # Vue.js Frontend
+  frontend:
+    image: node:20-alpine
+    container_name: frontend
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    networks:
+      - file-metadata-network
+    depends_on:
+      - file-server-1
+      - file-server-2
+      - file-server-3
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+networks:
+  file-metadata-network:
+    driver: bridge
+
+volumes:
+  etcd-data:
