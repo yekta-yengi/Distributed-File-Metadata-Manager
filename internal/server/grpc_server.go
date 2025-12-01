@@ -95,6 +95,9 @@ func (s *Server) startHTTPServer(ctx context.Context) error {
 	mux.HandleFunc("/api/simulation/1", s.handleSimulation1)
 	mux.HandleFunc("/api/simulation/2", s.handleSimulation2)
 	mux.HandleFunc("/api/simulation/3", s.handleSimulation3)
+	mux.HandleFunc("/api/simulation/4", s.handleSimulation4)
+	mux.HandleFunc("/api/simulation/5", s.handleSimulation5)
+	mux.HandleFunc("/api/simulation/6", s.handleSimulation6)
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.httpPort),
@@ -474,6 +477,114 @@ func (s *Server) handleSimulation3(w http.ResponseWriter, r *http.Request) {
 	err := s.simRunner.RunSimulation3(ctx, callback)
 	if err != nil {
 		log.Printf("[%s] Simulation 3 error: %v", s.nodeID, err)
+	}
+
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
+}
+
+// handleSimulation4 runs simulation 4 with SSE events
+func (s *Server) handleSimulation4(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 4", s.nodeID)
+	err := s.simRunner.RunSimulation4(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 4 error: %v", s.nodeID, err)
+	}
+
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
+}
+
+// handleSimulation5 runs simulation 5 with SSE events
+func (s *Server) handleSimulation5(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 5", s.nodeID)
+	err := s.simRunner.RunSimulation5(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 5 error: %v", s.nodeID, err)
+	}
+
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
+}
+
+// handleSimulation6 runs simulation 6 with SSE events
+func (s *Server) handleSimulation6(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 6", s.nodeID)
+	err := s.simRunner.RunSimulation6(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 6 error: %v", s.nodeID, err)
 	}
 
 	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")

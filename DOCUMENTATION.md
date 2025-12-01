@@ -9,7 +9,8 @@
 6. [Race Condition Resolution](#6-race-condition-resolution)
 7. [API Reference](#7-api-reference)
 8. [Running the System](#8-running-the-system)
-9. [Testing Guide](#9-testing-guide)
+9. [Interactive Simulations](#9-interactive-simulations)
+10. [Testing Guide](#10-testing-guide)
 
 ---
 
@@ -870,9 +871,426 @@ docker compose down -v
 
 ---
 
-## 9. Testing Guide
+## 9. Interactive Simulations
 
-### 9.1 Manual Testing via UI
+The system includes 6 interactive simulations that demonstrate distributed locking concepts with real-time animations. Each simulation uses Server-Sent Events (SSE) to stream events to the Vue.js frontend, which visualizes server states and lock operations.
+
+### 9.1 Simulation Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Vue.js Frontend                             │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                    Simulation Panel                           │  │
+│  │  [Sim 1] [Sim 2] [Sim 3] [Sim 4] [Sim 5] [Sim 6]             │  │
+│  │                                                               │  │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐                       │  │
+│  │  │Server-1 │  │Server-2 │  │Server-3 │   ← Animated states   │  │
+│  │  │ 🔒 LOCK │  │ ⏳ WAIT │  │ 💤 IDLE │                       │  │
+│  │  └─────────┘  └─────────┘  └─────────┘                       │  │
+│  │                                                               │  │
+│  │  Event Timeline (scrolling log)                              │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │ SSE (Server-Sent Events)
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Go HTTP Server (port 8081)                       │
+│  /api/simulation/1  →  RunSimulation1()                            │
+│  /api/simulation/2  →  RunSimulation2()                            │
+│  /api/simulation/3  →  RunSimulation3()                            │
+│  /api/simulation/4  →  RunSimulation4()                            │
+│  /api/simulation/5  →  RunSimulation5()                            │
+│  /api/simulation/6  →  RunSimulation6()                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 9.2 Event Structure
+
+Each simulation emits events with the following structure:
+
+```go
+// Event represents a simulation event
+type Event struct {
+    Timestamp string `json:"timestamp"`  // "15:04:05.000"
+    Server    string `json:"server"`     // "server-1", "server-2", "server-3", "system"
+    Action    string `json:"action"`     // "lock", "unlock", "update", "read", "create", etc.
+    Status    string `json:"status"`     // "pending", "success", "failed", "waiting"
+    Message   string `json:"message"`    // Human-readable description
+    FileID    string `json:"file_id"`    // Optional: affected file
+    Details   string `json:"details"`    // Optional: additional context
+}
+```
+
+### 9.3 Simulation 1: Basic Lock Contention
+
+**Scenario**: Two servers compete for the same lock on a shared file.
+
+```
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ Server-1: Creates file                                 │
+│ T+0.5s │ Server-1: Acquires lock ✓                              │
+│ T+0.8s │ Server-2: Attempts lock → BLOCKED                      │
+│ T+1.3s │ Server-1: Updates file (version 2)                     │
+│ T+1.8s │ Server-1: Releases lock                                │
+│ T+1.8s │ Server-2: Acquires lock ✓ (was waiting)                │
+│ T+2.3s │ Server-2: Updates file (version 3)                     │
+│ T+2.8s │ Server-2: Releases lock                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: When a lock is held, other servers must wait. Updates happen sequentially, preventing data corruption.
+
+**Code Excerpt**:
+```go
+// Server 1 acquires lock
+lockInfo1, err := store1.AcquireLock(ctx, fileID)
+sendEvent(cb, "server-1", "lock", "success", "Lock ACQUIRED!", fileID, "")
+
+// Server 2 blocks while trying to acquire
+sendEvent(cb, "server-2", "lock", "waiting", "BLOCKED! Waiting for lock...", fileID, "")
+go func() {
+    lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+    defer cancel()
+    _, err := store2.AcquireLock(lockCtx, fileID)
+    lockChan <- err
+}()
+```
+
+### 9.4 Simulation 2: Three-Way Race
+
+**Scenario**: Three servers simultaneously attempt to acquire the same lock.
+
+```
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ System: Creates shared file                            │
+│ T+0.3s │ Server-1: Racing for lock...                           │
+│ T+0.3s │ Server-2: Racing for lock...                           │
+│ T+0.3s │ Server-3: Racing for lock...                           │
+│ T+0.5s │ Server-X: WINS! Lock acquired (#1 in queue)            │
+│ T+1.0s │ Server-X: Updates file → releases                      │
+│ T+1.0s │ Server-Y: Lock acquired (#2 in queue)                  │
+│ T+1.5s │ Server-Y: Updates file → releases                      │
+│ T+1.5s │ Server-Z: Lock acquired (#3 in queue)                  │
+│ T+2.0s │ Server-Z: Updates file → releases                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: Even with simultaneous requests, etcd ensures only one server acquires the lock at a time. The order is determined by etcd's revision-based queue.
+
+**Code Excerpt**:
+```go
+// Launch all three lock attempts simultaneously
+go func() {
+    lockCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+    defer cancel()
+    _, err := store1.AcquireLock(lockCtx, fileID)
+    results <- lockResult{"server-1", store1, err}
+}()
+
+go func() {
+    _, err := store2.AcquireLock(lockCtx, fileID)
+    results <- lockResult{"server-2", store2, err}
+}()
+
+go func() {
+    _, err := store3.AcquireLock(lockCtx, fileID)
+    results <- lockResult{"server-3", store3, err}
+}()
+```
+
+### 9.5 Simulation 3: Lock Timeout
+
+**Scenario**: A server holds a lock for an extended period, causing other servers to timeout.
+
+```
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ Server-1: Acquires lock                                │
+│ T+0.5s │ Server-2: Attempts lock (2s timeout)...                │
+│ T+0.7s │ Server-1: Processing step 1/3...                       │
+│ T+1.4s │ Server-1: Processing step 2/3...                       │
+│ T+2.1s │ Server-1: Processing step 3/3...                       │
+│ T+2.5s │ Server-2: TIMEOUT! Could not acquire lock              │
+│ T+3.0s │ Server-1: Updates file → releases lock                 │
+│ T+3.5s │ Server-2: Retries → Success!                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: Clients should implement timeout and retry logic. Long-running operations can cause other clients to fail if they use short timeouts.
+
+**Code Excerpt**:
+```go
+// Server 1 simulates long work
+for i := 1; i <= 3; i++ {
+    time.Sleep(700 * time.Millisecond)
+    sendEvent(cb, "server-1", "work", "pending",
+        fmt.Sprintf("Processing step %d/3...", i), fileID, "")
+}
+
+// Server 2's lock attempt with short timeout
+lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+_, err := store2.AcquireLock(lockCtx, fileID)
+cancel()
+
+if err != nil {
+    sendEvent(cb, "server-2", "lock", "failed",
+        "TIMEOUT! Could not acquire lock", fileID, "")
+}
+```
+
+### 9.6 Simulation 4: Cascading Updates
+
+**Scenario**: A chain of dependent files where updating File A triggers updates to File B and then File C.
+
+```
+Dependency Chain:
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│  File A  │────▶│  File B  │────▶│  File C  │
+│ (parent) │     │ (child)  │     │(g-child) │
+└──────────┘     └──────────┘     └──────────┘
+
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ System: Creates file chain (A, B, C)                   │
+│ T+1.0s │ Server-1: Locks A → Updates A → Releases               │
+│ T+2.0s │ Server-2: Detects A complete → Locks B                 │
+│ T+2.5s │ Server-2: Updates B → Releases                         │
+│ T+3.0s │ Server-3: Detects B complete → Locks C                 │
+│ T+3.5s │ Server-3: Updates C → Releases                         │
+│ T+4.0s │ System: Chain complete! A→B→C all processed            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: Complex workflows can be coordinated using distributed locks. Each step in the chain acquires its own lock independently.
+
+**Code Excerpt**:
+```go
+// Create file chain with dependencies
+store1.CreateFile(ctx, fileA, "simulation",
+    map[string]string{"type": "parent", "status": "pending"})
+store1.CreateFile(ctx, fileB, "simulation",
+    map[string]string{"type": "child", "depends_on": fileA})
+store1.CreateFile(ctx, fileC, "simulation",
+    map[string]string{"type": "grandchild", "depends_on": fileB})
+
+// Server 2 processes after A completes
+sendEvent(cb, "server-2", "lock", "pending",
+    "A completed! Locking File B...", fileB, "Cascade step 1")
+store2.AcquireLock(ctx, fileB)
+store2.UpdateFile(ctx, fileB, map[string]string{
+    "status": "completed",
+    "parent_status": "completed"
+})
+```
+
+### 9.7 Simulation 5: Read-Write Conflict
+
+**Scenario**: Multiple servers reading while one server tries to write, demonstrating that reads don't require locks but writes do.
+
+```
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ Server-1: Creates shared resource                      │
+│ T+0.5s │ Server-2: Reads file (no lock needed) ✓                │
+│ T+0.8s │ Server-3: Reads file (concurrent read OK) ✓            │
+│ T+1.0s │ Server-1: Acquires write lock                          │
+│ T+1.3s │ Server-2: Reads during write lock ✓ (still works!)     │
+│ T+1.5s │ Server-1: Writes new data                              │
+│ T+1.8s │ Server-3: Attempts write → BLOCKED                     │
+│ T+2.0s │ Server-1: Releases lock                                │
+│ T+2.0s │ Server-3: Acquires lock → Writes → Releases            │
+│ T+2.5s │ Server-2: Verifies final data                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: In this implementation, reads can proceed even when a write lock is held (dirty reads possible). Only writes require exclusive locks.
+
+**Code Excerpt**:
+```go
+// Multiple readers can read concurrently
+sendEvent(cb, "server-2", "read", "pending", "Reading file...", fileID, "")
+meta, _ := store2.GetFile(ctx, fileID)
+sendEvent(cb, "server-2", "read", "success",
+    fmt.Sprintf("Read complete: data='%s'", meta.Attributes["data"]),
+    fileID, "No lock needed for read")
+
+// Writer needs exclusive access
+sendEvent(cb, "server-1", "lock", "pending",
+    "Writer needs exclusive access...", fileID, "")
+store1.AcquireLock(ctx, fileID)
+sendEvent(cb, "server-1", "lock", "success",
+    "Writer acquired lock!", fileID, "Exclusive access granted")
+```
+
+### 9.8 Simulation 6: Fair Lock Queue (FIFO)
+
+**Scenario**: Demonstrates that locks are granted in the order they were requested (First-In-First-Out).
+
+```
+Queue Visualization:
+┌─────────────────────────────────────────────────────────────────┐
+│ Initial:  [Server-1*]                         (* = lock holder) │
+│ T+0.5s:   [Server-1*] ← Server-2                                │
+│ T+0.8s:   [Server-1*] ← Server-2 ← Server-3                     │
+│ T+1.5s:   [Server-2*] ← Server-3                                │
+│ T+2.5s:   [Server-3*]                                           │
+│ T+3.5s:   (queue empty)                                         │
+└─────────────────────────────────────────────────────────────────┘
+
+Timeline:
+┌─────────────────────────────────────────────────────────────────┐
+│ T+0.0s │ Server-1: Requests lock (1st) → Acquired               │
+│ T+0.5s │ Server-2: Requests lock (2nd) → Waiting                │
+│ T+0.8s │ Server-3: Requests lock (3rd) → Waiting                │
+│ T+1.5s │ Server-1: Releases → Server-2 gets lock (was 2nd)      │
+│ T+2.5s │ Server-2: Releases → Server-3 gets lock (was 3rd)      │
+│ T+3.5s │ Server-3: Releases → Queue empty                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Learning**: etcd's lock implementation ensures fairness - locks are granted in the order they were requested, preventing starvation.
+
+**Code Excerpt**:
+```go
+// Server 1 acquires first
+store1.AcquireLock(ctx, fileID)
+sendEvent(cb, "server-1", "lock", "success", "Server-1 acquired lock!",
+    fileID, "First in queue")
+
+// Server 2 joins queue
+sendEvent(cb, "server-2", "lock", "pending",
+    "Server-2 requesting lock (2nd)...", fileID, "Queue position: 2")
+go func() {
+    _, err := store2.AcquireLock(lockCtx, fileID)
+    resultChan2 <- (err == nil)
+}()
+
+// Server 3 joins queue
+sendEvent(cb, "server-3", "lock", "pending",
+    "Server-3 requesting lock (3rd)...", fileID, "Queue position: 3")
+go func() {
+    _, err := store3.AcquireLock(lockCtx, fileID)
+    resultChan3 <- (err == nil)
+}()
+
+// Results come in FIFO order
+<-resultChan2  // Server-2 gets lock second
+<-resultChan3  // Server-3 gets lock third
+```
+
+### 9.9 Running Simulations
+
+**Via the UI**:
+1. Open http://localhost:3000
+2. Locate the "Simulations" panel at the bottom
+3. Click any simulation button (Sim 1 through Sim 6)
+4. Watch the animated server states and event timeline
+
+**Via curl/API**:
+```bash
+# Run Simulation 1
+curl -N http://localhost:8081/api/simulation/1
+
+# Run Simulation 2 (Three-Way Race)
+curl -N http://localhost:8081/api/simulation/2
+
+# Run Simulation 6 (Fair Queue)
+curl -N http://localhost:8081/api/simulation/6
+```
+
+The `-N` flag disables curl's output buffering, allowing you to see SSE events in real-time.
+
+### 9.10 SSE Implementation
+
+The server uses Server-Sent Events to stream simulation progress:
+
+```go
+// HTTP handler for simulations
+func (s *Server) handleSimulation1(w http.ResponseWriter, r *http.Request) {
+    setupSSE(w)
+    flusher, _ := w.(http.Flusher)
+
+    // Event callback streams each event to the client
+    eventCallback := func(event simulation.Event) {
+        data := simulation.EventToJSON(event)
+        fmt.Fprintf(w, "data: %s\n\n", data)
+        flusher.Flush()
+    }
+
+    runner := simulation.NewRunner(s.client)
+    defer runner.Cleanup()
+    runner.RunSimulation1(r.Context(), eventCallback)
+
+    // Signal end of simulation
+    fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+    flusher.Flush()
+}
+
+// SSE header setup
+func setupSSE(w http.ResponseWriter) {
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+}
+```
+
+### 9.11 Frontend Event Handling
+
+The Vue.js frontend processes SSE events and updates the UI:
+
+```javascript
+runSimulation(simNumber) {
+    this.resetSimulationState()
+    this.simulationRunning = true
+
+    const eventSource = new EventSource(
+        `http://localhost:8081/api/simulation/${simNumber}`
+    )
+
+    eventSource.onmessage = (e) => {
+        const event = JSON.parse(e.data)
+
+        // End event signals completion
+        if (event.action === 'end') {
+            eventSource.close()
+            this.simulationRunning = false
+            return
+        }
+
+        // Add to event log
+        this.simulationEvents.push(event)
+
+        // Update server state visualization
+        this.updateSimState(event)
+    }
+
+    eventSource.onerror = () => {
+        eventSource.close()
+        this.simulationRunning = false
+    }
+}
+
+updateSimState(event) {
+    if (event.server.startsWith('server-')) {
+        const serverNum = event.server.split('-')[1]
+        this.simServerStates[serverNum] = {
+            action: event.action,
+            status: event.status,
+            message: event.message
+        }
+    }
+}
+```
+
+---
+
+## 10. Testing Guide
+
+### 10.1 Manual Testing via UI
 
 1. Open http://localhost:3000
 2. Create a file using the "Create" tab
@@ -881,7 +1299,7 @@ docker compose down -v
 5. Return to "Lock" tab, click "Release Lock"
 6. Switch to another server and repeat
 
-### 9.2 Testing via curl
+### 10.2 Testing via curl
 
 ```bash
 # Create a file via Server 1
@@ -917,7 +1335,7 @@ curl -X POST http://localhost:8082/api/locks/test-file
 # Response: {"success":true,"lock_info":{"holder":"server-2",...}}
 ```
 
-### 9.3 Race Condition Demo
+### 10.3 Race Condition Demo
 
 The UI includes a "Demo" tab that:
 1. Creates a demo file (if not exists)
@@ -930,7 +1348,7 @@ The UI includes a "Demo" tab that:
 - Other servers wait their turn
 - File version increments correctly (no lost updates)
 
-### 9.4 Querying etcd Directly
+### 10.4 Querying etcd Directly
 
 ```bash
 # View all metadata

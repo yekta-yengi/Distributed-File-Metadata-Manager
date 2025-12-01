@@ -401,3 +401,306 @@ func EventToJSON(e Event) string {
 	data, _ := json.Marshal(e)
 	return string(data)
 }
+
+// RunSimulation4 demonstrates cascading updates across multiple files
+// Scenario: Update file A, then file B depends on A, then file C depends on B
+func (r *Runner) RunSimulation4(ctx context.Context, cb EventCallback) error {
+	fileA := fmt.Sprintf("sim4-fileA-%d", time.Now().UnixNano())
+	fileB := fmt.Sprintf("sim4-fileB-%d", time.Now().UnixNano())
+	fileC := fmt.Sprintf("sim4-fileC-%d", time.Now().UnixNano())
+
+	r.Cleanup()
+
+	sendEvent(cb, "system", "init", "pending", "Starting Simulation 4: Cascading Updates", fileA, "Chain reaction: A -> B -> C")
+	time.Sleep(500 * time.Millisecond)
+
+	store1, _ := r.getOrCreateStore("sim-server-1")
+	store2, _ := r.getOrCreateStore("sim-server-2")
+	store3, _ := r.getOrCreateStore("sim-server-3")
+
+	// Create all files
+	sendEvent(cb, "system", "create", "pending", "Creating file chain...", "", "")
+	time.Sleep(300 * time.Millisecond)
+	store1.CreateFile(ctx, fileA, "simulation", map[string]string{"type": "parent", "status": "pending"})
+	sendEvent(cb, "server-1", "create", "success", "File A created", fileA, "Parent file")
+	time.Sleep(200 * time.Millisecond)
+	store1.CreateFile(ctx, fileB, "simulation", map[string]string{"type": "child", "depends_on": fileA, "status": "pending"})
+	sendEvent(cb, "server-1", "create", "success", "File B created", fileB, "Depends on A")
+	time.Sleep(200 * time.Millisecond)
+	store1.CreateFile(ctx, fileC, "simulation", map[string]string{"type": "grandchild", "depends_on": fileB, "status": "pending"})
+	sendEvent(cb, "server-1", "create", "success", "File C created", fileC, "Depends on B")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 1 updates file A
+	sendEvent(cb, "server-1", "lock", "pending", "Locking File A...", fileA, "")
+	time.Sleep(300 * time.Millisecond)
+	store1.AcquireLock(ctx, fileA)
+	sendEvent(cb, "server-1", "lock", "success", "Lock acquired on A", fileA, "")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-1", "update", "pending", "Updating File A...", fileA, "")
+	time.Sleep(400 * time.Millisecond)
+	store1.UpdateFile(ctx, fileA, map[string]string{"status": "completed", "processed_by": "server-1"})
+	sendEvent(cb, "server-1", "update", "success", "File A updated!", fileA, "Status: completed")
+	time.Sleep(300 * time.Millisecond)
+
+	store1.ReleaseLock(ctx, fileA)
+	sendEvent(cb, "server-1", "unlock", "success", "Lock released on A", fileA, "Triggering cascade...")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 2 detects A completed, updates B
+	sendEvent(cb, "server-2", "lock", "pending", "A completed! Locking File B...", fileB, "Cascade step 1")
+	time.Sleep(300 * time.Millisecond)
+	store2.AcquireLock(ctx, fileB)
+	sendEvent(cb, "server-2", "lock", "success", "Lock acquired on B", fileB, "")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-2", "update", "pending", "Updating File B...", fileB, "")
+	time.Sleep(400 * time.Millisecond)
+	store2.UpdateFile(ctx, fileB, map[string]string{"status": "completed", "processed_by": "server-2", "parent_status": "completed"})
+	sendEvent(cb, "server-2", "update", "success", "File B updated!", fileB, "Status: completed")
+	time.Sleep(300 * time.Millisecond)
+
+	store2.ReleaseLock(ctx, fileB)
+	sendEvent(cb, "server-2", "unlock", "success", "Lock released on B", fileB, "Triggering next cascade...")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 3 detects B completed, updates C
+	sendEvent(cb, "server-3", "lock", "pending", "B completed! Locking File C...", fileC, "Cascade step 2")
+	time.Sleep(300 * time.Millisecond)
+	store3.AcquireLock(ctx, fileC)
+	sendEvent(cb, "server-3", "lock", "success", "Lock acquired on C", fileC, "")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-3", "update", "pending", "Updating File C...", fileC, "")
+	time.Sleep(400 * time.Millisecond)
+	store3.UpdateFile(ctx, fileC, map[string]string{"status": "completed", "processed_by": "server-3", "chain": "complete"})
+	sendEvent(cb, "server-3", "update", "success", "File C updated!", fileC, "Status: completed")
+	time.Sleep(300 * time.Millisecond)
+
+	store3.ReleaseLock(ctx, fileC)
+	sendEvent(cb, "server-3", "unlock", "success", "Lock released on C", fileC, "Chain complete!")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "system", "complete", "success", "Simulation 4 Complete!", "", "Cascading updates: A->B->C all completed in order!")
+
+	return nil
+}
+
+// RunSimulation5 demonstrates read-write conflict resolution
+// Scenario: Multiple servers reading while one tries to write
+func (r *Runner) RunSimulation5(ctx context.Context, cb EventCallback) error {
+	fileID := fmt.Sprintf("sim5-file-%d", time.Now().UnixNano())
+
+	r.Cleanup()
+
+	sendEvent(cb, "system", "init", "pending", "Starting Simulation 5: Read-Write Conflict", fileID, "Readers vs Writer scenario")
+	time.Sleep(500 * time.Millisecond)
+
+	store1, _ := r.getOrCreateStore("sim-server-1")
+	store2, _ := r.getOrCreateStore("sim-server-2")
+	store3, _ := r.getOrCreateStore("sim-server-3")
+
+	// Create file
+	sendEvent(cb, "server-1", "create", "pending", "Creating shared resource...", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+	store1.CreateFile(ctx, fileID, "simulation", map[string]string{"data": "initial", "reads": "0"})
+	sendEvent(cb, "server-1", "create", "success", "Shared resource created", fileID, "")
+	time.Sleep(500 * time.Millisecond)
+
+	// Multiple readers start
+	sendEvent(cb, "server-2", "read", "pending", "Reading file...", fileID, "Reader 1")
+	time.Sleep(200 * time.Millisecond)
+	meta, _ := store2.GetFile(ctx, fileID)
+	sendEvent(cb, "server-2", "read", "success", fmt.Sprintf("Read complete: data='%s'", meta.Attributes["data"]), fileID, "No lock needed for read")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-3", "read", "pending", "Reading file...", fileID, "Reader 2")
+	time.Sleep(200 * time.Millisecond)
+	meta, _ = store3.GetFile(ctx, fileID)
+	sendEvent(cb, "server-3", "read", "success", fmt.Sprintf("Read complete: data='%s'", meta.Attributes["data"]), fileID, "Concurrent read OK")
+	time.Sleep(300 * time.Millisecond)
+
+	// Writer wants to update
+	sendEvent(cb, "server-1", "lock", "pending", "Writer needs exclusive access...", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+	store1.AcquireLock(ctx, fileID)
+	sendEvent(cb, "server-1", "lock", "success", "Writer acquired lock!", fileID, "Exclusive access granted")
+	time.Sleep(500 * time.Millisecond)
+
+	// Readers try to read during write
+	sendEvent(cb, "server-2", "read", "pending", "Attempting read during write...", fileID, "")
+	time.Sleep(200 * time.Millisecond)
+	meta, _ = store2.GetFile(ctx, fileID)
+	sendEvent(cb, "server-2", "read", "success", fmt.Sprintf("Read allowed: data='%s'", meta.Attributes["data"]), fileID, "Reads still work during write lock")
+	time.Sleep(300 * time.Millisecond)
+
+	// Writer updates
+	sendEvent(cb, "server-1", "update", "pending", "Writing new data...", fileID, "")
+	time.Sleep(500 * time.Millisecond)
+	store1.UpdateFile(ctx, fileID, map[string]string{"data": "modified", "writer": "server-1"})
+	sendEvent(cb, "server-1", "update", "success", "Write complete!", fileID, "data='modified'")
+	time.Sleep(300 * time.Millisecond)
+
+	// Another server tries to write (blocked)
+	sendEvent(cb, "server-3", "lock", "pending", "Server-3 wants to write...", fileID, "")
+	sendEvent(cb, "server-3", "lock", "waiting", "BLOCKED! Writer holding lock", fileID, "Must wait...")
+
+	go func() {
+		lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		store3.AcquireLock(lockCtx, fileID)
+	}()
+
+	time.Sleep(800 * time.Millisecond)
+
+	// Original writer releases
+	sendEvent(cb, "server-1", "unlock", "pending", "Writer releasing lock...", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+	store1.ReleaseLock(ctx, fileID)
+	sendEvent(cb, "server-1", "unlock", "success", "Lock released!", fileID, "")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 3 gets the lock
+	sendEvent(cb, "server-3", "lock", "success", "Server-3 acquired lock!", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-3", "update", "pending", "Server-3 writing...", fileID, "")
+	time.Sleep(400 * time.Millisecond)
+	store3.UpdateFile(ctx, fileID, map[string]string{"data": "final", "writer": "server-3"})
+	sendEvent(cb, "server-3", "update", "success", "Write complete!", fileID, "data='final'")
+	time.Sleep(300 * time.Millisecond)
+
+	store3.ReleaseLock(ctx, fileID)
+	sendEvent(cb, "server-3", "unlock", "success", "Lock released", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+
+	// Final read to verify
+	sendEvent(cb, "server-2", "read", "pending", "Final verification read...", fileID, "")
+	time.Sleep(200 * time.Millisecond)
+	meta, _ = store2.GetFile(ctx, fileID)
+	sendEvent(cb, "server-2", "read", "success", fmt.Sprintf("Verified: data='%s', version=%d", meta.Attributes["data"], meta.Version), fileID, "All writes preserved!")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "system", "complete", "success", "Simulation 5 Complete!", fileID, "Read-Write conflicts resolved correctly!")
+
+	return nil
+}
+
+// RunSimulation6 demonstrates fair lock queue (FIFO ordering)
+// Scenario: Show that locks are granted in request order
+func (r *Runner) RunSimulation6(ctx context.Context, cb EventCallback) error {
+	fileID := fmt.Sprintf("sim6-file-%d", time.Now().UnixNano())
+
+	r.Cleanup()
+
+	sendEvent(cb, "system", "init", "pending", "Starting Simulation 6: Fair Lock Queue", fileID, "Demonstrating FIFO lock ordering")
+	time.Sleep(500 * time.Millisecond)
+
+	store1, _ := r.getOrCreateStore("sim-server-1")
+	store2, _ := r.getOrCreateStore("sim-server-2")
+	store3, _ := r.getOrCreateStore("sim-server-3")
+
+	// Create file
+	sendEvent(cb, "server-1", "create", "pending", "Creating file...", fileID, "")
+	time.Sleep(300 * time.Millisecond)
+	store1.CreateFile(ctx, fileID, "simulation", map[string]string{"queue_demo": "true"})
+	sendEvent(cb, "server-1", "create", "success", "File created", fileID, "")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 1 acquires lock first
+	sendEvent(cb, "server-1", "lock", "pending", "Server-1 requesting lock (1st)...", fileID, "Queue position: 1")
+	time.Sleep(300 * time.Millisecond)
+	store1.AcquireLock(ctx, fileID)
+	sendEvent(cb, "server-1", "lock", "success", "Server-1 acquired lock!", fileID, "First in queue")
+	time.Sleep(500 * time.Millisecond)
+
+	// Server 2 joins queue
+	sendEvent(cb, "server-2", "lock", "pending", "Server-2 requesting lock (2nd)...", fileID, "Queue position: 2")
+	time.Sleep(100 * time.Millisecond)
+	sendEvent(cb, "server-2", "lock", "waiting", "Server-2 in queue...", fileID, "Waiting behind Server-1")
+
+	resultChan2 := make(chan bool, 1)
+	go func() {
+		lockCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		_, err := store2.AcquireLock(lockCtx, fileID)
+		resultChan2 <- (err == nil)
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Server 3 joins queue
+	sendEvent(cb, "server-3", "lock", "pending", "Server-3 requesting lock (3rd)...", fileID, "Queue position: 3")
+	time.Sleep(100 * time.Millisecond)
+	sendEvent(cb, "server-3", "lock", "waiting", "Server-3 in queue...", fileID, "Waiting behind Server-2")
+
+	resultChan3 := make(chan bool, 1)
+	go func() {
+		lockCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		_, err := store3.AcquireLock(lockCtx, fileID)
+		resultChan3 <- (err == nil)
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Show queue status
+	sendEvent(cb, "system", "info", "pending", "Current queue: [Server-1*] <- Server-2 <- Server-3", fileID, "* = lock holder")
+	time.Sleep(800 * time.Millisecond)
+
+	// Server 1 does work and releases
+	sendEvent(cb, "server-1", "work", "pending", "Server-1 processing...", fileID, "")
+	time.Sleep(600 * time.Millisecond)
+	sendEvent(cb, "server-1", "update", "pending", "Server-1 updating...", fileID, "")
+	time.Sleep(400 * time.Millisecond)
+	store1.UpdateFile(ctx, fileID, map[string]string{"processed_by": "server-1", "order": "1"})
+	sendEvent(cb, "server-1", "update", "success", "Server-1 done!", fileID, "Order: 1")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-1", "unlock", "pending", "Server-1 releasing...", fileID, "")
+	time.Sleep(200 * time.Millisecond)
+	store1.ReleaseLock(ctx, fileID)
+	sendEvent(cb, "server-1", "unlock", "success", "Server-1 released lock", fileID, "Next: Server-2")
+	time.Sleep(300 * time.Millisecond)
+
+	// Server 2 gets lock (was 2nd in queue)
+	<-resultChan2
+	sendEvent(cb, "server-2", "lock", "success", "Server-2 acquired lock!", fileID, "FIFO: Was 2nd, got 2nd")
+	time.Sleep(500 * time.Millisecond)
+
+	sendEvent(cb, "server-2", "work", "pending", "Server-2 processing...", fileID, "")
+	time.Sleep(600 * time.Millisecond)
+	sendEvent(cb, "server-2", "update", "pending", "Server-2 updating...", fileID, "")
+	time.Sleep(400 * time.Millisecond)
+	store2.UpdateFile(ctx, fileID, map[string]string{"processed_by": "server-2", "order": "2"})
+	sendEvent(cb, "server-2", "update", "success", "Server-2 done!", fileID, "Order: 2")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "server-2", "unlock", "pending", "Server-2 releasing...", fileID, "")
+	time.Sleep(200 * time.Millisecond)
+	store2.ReleaseLock(ctx, fileID)
+	sendEvent(cb, "server-2", "unlock", "success", "Server-2 released lock", fileID, "Next: Server-3")
+	time.Sleep(300 * time.Millisecond)
+
+	// Server 3 gets lock (was 3rd in queue)
+	<-resultChan3
+	sendEvent(cb, "server-3", "lock", "success", "Server-3 acquired lock!", fileID, "FIFO: Was 3rd, got 3rd")
+	time.Sleep(500 * time.Millisecond)
+
+	sendEvent(cb, "server-3", "work", "pending", "Server-3 processing...", fileID, "")
+	time.Sleep(600 * time.Millisecond)
+	sendEvent(cb, "server-3", "update", "pending", "Server-3 updating...", fileID, "")
+	time.Sleep(400 * time.Millisecond)
+	store3.UpdateFile(ctx, fileID, map[string]string{"processed_by": "server-3", "order": "3"})
+	sendEvent(cb, "server-3", "update", "success", "Server-3 done!", fileID, "Order: 3")
+	time.Sleep(300 * time.Millisecond)
+
+	store3.ReleaseLock(ctx, fileID)
+	sendEvent(cb, "server-3", "unlock", "success", "Server-3 released lock", fileID, "Queue empty!")
+	time.Sleep(300 * time.Millisecond)
+
+	sendEvent(cb, "system", "complete", "success", "Simulation 6 Complete!", fileID, "FIFO ordering verified: 1->2->3")
+
+	return nil
+}

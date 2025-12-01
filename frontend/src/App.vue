@@ -144,6 +144,35 @@
               <span class="sim-desc">Long operation causes timeout</span>
             </button>
           </div>
+          <div class="sim-buttons">
+            <button
+              class="sim-btn"
+              @click="runSimulation(4)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">4</span>
+              <span class="sim-label">Cascading Updates</span>
+              <span class="sim-desc">Chain reaction: A -> B -> C</span>
+            </button>
+            <button
+              class="sim-btn"
+              @click="runSimulation(5)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">5</span>
+              <span class="sim-label">Read-Write Conflict</span>
+              <span class="sim-desc">Readers vs Writer scenario</span>
+            </button>
+            <button
+              class="sim-btn"
+              @click="runSimulation(6)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">6</span>
+              <span class="sim-label">Fair Lock Queue</span>
+              <span class="sim-desc">FIFO ordering demonstration</span>
+            </button>
+          </div>
 
           <!-- Simulation Visualization -->
           <div v-if="simulationEvents.length > 0 || simulationRunning" class="sim-visualization">
@@ -1117,6 +1146,8 @@ section h2 {
 .action-badge.work { background: #666; color: #fff; }
 .action-badge.complete { background: #00ff88; color: #000; }
 .action-badge.error { background: #ff4444; color: #fff; }
+.action-badge.read { background: #38bdf8; color: #000; }
+.action-badge.info { background: #94a3b8; color: #000; }
 
 .event-message {
   color: #fff;
