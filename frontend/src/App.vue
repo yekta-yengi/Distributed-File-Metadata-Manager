@@ -108,22 +108,100 @@
           </div>
         </div>
 
-        <!-- Race Condition Demo -->
-        <div v-if="activeTab === 'Demo'" class="tab-content">
-          <h3>Concurrent Update Demo</h3>
-          <p>This will attempt to update the same file from all 3 servers simultaneously.</p>
-          <div class="form-group">
-            <label>File ID</label>
-            <input v-model="demoFileId" placeholder="e.g., demo-file" />
+        <!-- Simulations Tab -->
+        <div v-if="activeTab === 'Simulations'" class="tab-content simulations-tab">
+          <div class="sim-header">
+            <h3>Race Condition Simulations</h3>
+            <p>Watch distributed locking in action with real-time animations</p>
           </div>
-          <button class="btn primary" @click="runRaceDemo">Run Concurrent Update Demo</button>
-          <div v-if="demoResults.length" class="demo-results">
-            <h4>Results</h4>
-            <div v-for="(result, idx) in demoResults" :key="idx" class="demo-result">
-              <span :class="['badge', result.success ? 'success' : 'error']">
-                {{ result.server }}
+
+          <div class="sim-buttons">
+            <button
+              class="sim-btn"
+              @click="runSimulation(1)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">1</span>
+              <span class="sim-label">Basic Lock Contention</span>
+              <span class="sim-desc">Two servers compete for same lock</span>
+            </button>
+            <button
+              class="sim-btn"
+              @click="runSimulation(2)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">2</span>
+              <span class="sim-label">Three-Way Race</span>
+              <span class="sim-desc">Three servers race simultaneously</span>
+            </button>
+            <button
+              class="sim-btn"
+              @click="runSimulation(3)"
+              :disabled="simulationRunning"
+            >
+              <span class="sim-icon">3</span>
+              <span class="sim-label">Lock Timeout</span>
+              <span class="sim-desc">Long operation causes timeout</span>
+            </button>
+          </div>
+
+          <!-- Simulation Visualization -->
+          <div v-if="simulationEvents.length > 0 || simulationRunning" class="sim-visualization">
+            <div class="sim-status-bar">
+              <span v-if="simulationRunning" class="running">
+                <span class="pulse"></span> Simulation Running...
               </span>
-              <span>{{ result.message }}</span>
+              <span v-else class="completed">Simulation Complete</span>
+            </div>
+
+            <!-- Server States -->
+            <div class="sim-servers">
+              <div
+                v-for="srv in simServerStates"
+                :key="srv.id"
+                :class="['sim-server', srv.state]"
+              >
+                <div class="srv-header">
+                  <div class="srv-indicator" :class="srv.state"></div>
+                  <span class="srv-name">{{ srv.name }}</span>
+                </div>
+                <div class="srv-status">{{ srv.statusText }}</div>
+                <div v-if="srv.hasLock" class="srv-lock">
+                  <span class="lock-icon">LOCK</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- File State -->
+            <div class="sim-file" v-if="simFileState.id">
+              <div class="file-header">
+                <span class="file-icon">FILE</span>
+                <span class="file-name">{{ simFileState.id }}</span>
+              </div>
+              <div class="file-version">Version: {{ simFileState.version }}</div>
+              <div class="file-lock-status" :class="{ locked: simFileState.locked }">
+                {{ simFileState.locked ? `Locked by ${simFileState.lockHolder}` : 'Unlocked' }}
+              </div>
+            </div>
+
+            <!-- Event Timeline -->
+            <div class="sim-timeline">
+              <h4>Event Timeline</h4>
+              <div class="timeline-events" ref="timelineRef">
+                <div
+                  v-for="(event, idx) in simulationEvents"
+                  :key="idx"
+                  :class="['timeline-event', event.status, getServerClass(event.server)]"
+                >
+                  <div class="event-time">{{ event.timestamp }}</div>
+                  <div class="event-server">{{ event.server }}</div>
+                  <div class="event-action">
+                    <span :class="['action-badge', event.action]">{{ event.action }}</span>
+                  </div>
+                  <div class="event-message">{{ event.message }}</div>
+                  <div v-if="event.details" class="event-details">{{ event.details }}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -152,8 +230,8 @@ export default {
   data() {
     return {
       selectedServer: 'server1',
-      activeTab: 'Create',
-      tabs: ['Create', 'Lock', 'Update', 'List', 'Demo'],
+      activeTab: 'Simulations',
+      tabs: ['Create', 'Lock', 'Update', 'List', 'Simulations'],
       servers: [
         { id: 'server1', name: 'Server 1', httpPort: 8081, status: 'checking' },
         { id: 'server2', name: 'Server 2', httpPort: 8082, status: 'checking' },
@@ -162,11 +240,18 @@ export default {
       createForm: { fileId: '', owner: '', attributes: '{}' },
       lockForm: { fileId: '' },
       updateForm: { fileId: '', attributes: '{}' },
-      demoFileId: 'demo-file',
       lockStatus: null,
       files: [],
-      demoResults: [],
-      activityLog: []
+      activityLog: [],
+      // Simulation state
+      simulationRunning: false,
+      simulationEvents: [],
+      simServerStates: [
+        { id: 'server-1', name: 'Server 1', state: 'idle', statusText: 'Idle', hasLock: false },
+        { id: 'server-2', name: 'Server 2', state: 'idle', statusText: 'Idle', hasLock: false },
+        { id: 'server-3', name: 'Server 3', state: 'idle', statusText: 'Idle', hasLock: false }
+      ],
+      simFileState: { id: '', version: 0, locked: false, lockHolder: '' }
     }
   },
   computed: {
@@ -194,6 +279,130 @@ export default {
         } catch {
           server.status = 'offline'
         }
+      }
+    },
+
+    getServerClass(serverName) {
+      if (serverName === 'server-1') return 'srv1'
+      if (serverName === 'server-2') return 'srv2'
+      if (serverName === 'server-3') return 'srv3'
+      return 'system'
+    },
+
+    resetSimulationState() {
+      this.simulationEvents = []
+      this.simServerStates = [
+        { id: 'server-1', name: 'Server 1', state: 'idle', statusText: 'Idle', hasLock: false },
+        { id: 'server-2', name: 'Server 2', state: 'idle', statusText: 'Idle', hasLock: false },
+        { id: 'server-3', name: 'Server 3', state: 'idle', statusText: 'Idle', hasLock: false }
+      ]
+      this.simFileState = { id: '', version: 0, locked: false, lockHolder: '' }
+    },
+
+    updateSimState(event) {
+      // Update server states based on event
+      const serverMap = {
+        'server-1': 0,
+        'server-2': 1,
+        'server-3': 2
+      }
+
+      const serverIdx = serverMap[event.server]
+      if (serverIdx !== undefined) {
+        const srv = this.simServerStates[serverIdx]
+
+        switch (event.action) {
+          case 'lock':
+            if (event.status === 'pending') {
+              srv.state = 'locking'
+              srv.statusText = 'Acquiring lock...'
+            } else if (event.status === 'waiting') {
+              srv.state = 'waiting'
+              srv.statusText = 'Waiting for lock...'
+            } else if (event.status === 'success') {
+              srv.state = 'locked'
+              srv.statusText = 'Lock acquired!'
+              srv.hasLock = true
+              this.simFileState.locked = true
+              this.simFileState.lockHolder = srv.name
+            } else if (event.status === 'failed') {
+              srv.state = 'failed'
+              srv.statusText = 'Lock failed'
+            }
+            break
+          case 'unlock':
+            if (event.status === 'success') {
+              srv.state = 'idle'
+              srv.statusText = 'Lock released'
+              srv.hasLock = false
+              this.simFileState.locked = false
+              this.simFileState.lockHolder = ''
+            }
+            break
+          case 'update':
+            if (event.status === 'pending') {
+              srv.state = 'updating'
+              srv.statusText = 'Updating file...'
+            } else if (event.status === 'success') {
+              srv.statusText = 'Updated!'
+              this.simFileState.version++
+            }
+            break
+          case 'create':
+            if (event.status === 'success') {
+              this.simFileState.version = 1
+            }
+            break
+          case 'work':
+            srv.state = 'working'
+            srv.statusText = event.message
+            break
+        }
+      }
+
+      // Update file ID
+      if (event.file_id) {
+        this.simFileState.id = event.file_id
+      }
+    },
+
+    runSimulation(simNumber) {
+      this.resetSimulationState()
+      this.simulationRunning = true
+      this.log('info', `Starting Simulation ${simNumber}`)
+
+      const eventSource = new EventSource(`http://localhost:8081/api/simulation/${simNumber}`)
+
+      eventSource.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data)
+
+          if (event.action === 'end') {
+            eventSource.close()
+            this.simulationRunning = false
+            this.log('success', `Simulation ${simNumber} completed`)
+            return
+          }
+
+          this.simulationEvents.push(event)
+          this.updateSimState(event)
+
+          // Auto-scroll timeline
+          this.$nextTick(() => {
+            const timeline = this.$refs.timelineRef
+            if (timeline) {
+              timeline.scrollTop = timeline.scrollHeight
+            }
+          })
+        } catch (err) {
+          console.error('Failed to parse event:', err)
+        }
+      }
+
+      eventSource.onerror = () => {
+        eventSource.close()
+        this.simulationRunning = false
+        this.log('error', 'Simulation connection closed')
       }
     },
 
@@ -300,60 +509,6 @@ export default {
       } catch (err) {
         console.error('Failed to list files:', err)
       }
-    },
-
-    async runRaceDemo() {
-      this.demoResults = []
-      this.log('info', 'Starting concurrent update demo...')
-
-      // First create the demo file if it doesn't exist
-      try {
-        await axios.post(`http://localhost:8081/api/files`, {
-          file_id: this.demoFileId,
-          owner: 'demo',
-          attributes: { demo: 'true' }
-        })
-      } catch {}
-
-      // Try to acquire lock and update from all servers simultaneously
-      const promises = this.servers.map(async (server) => {
-        const base = `http://localhost:${server.httpPort}/api`
-        try {
-          // Try to acquire lock
-          const lockRes = await axios.post(`${base}/locks/${this.demoFileId}`, {}, { timeout: 15000 })
-          if (lockRes.data.success) {
-            // Update the file
-            const updateRes = await axios.put(`${base}/files/${this.demoFileId}`, {
-              attributes: { updated_by: server.id, time: new Date().toISOString() }
-            })
-
-            // Release lock
-            await axios.delete(`${base}/locks/${this.demoFileId}`)
-
-            return {
-              server: server.name,
-              success: true,
-              message: `Lock acquired, updated to v${updateRes.data.metadata?.version}, lock released`
-            }
-          } else {
-            return {
-              server: server.name,
-              success: false,
-              message: lockRes.data.message
-            }
-          }
-        } catch (err) {
-          return {
-            server: server.name,
-            success: false,
-            message: err.response?.data?.message || err.message
-          }
-        }
-      })
-
-      this.demoResults = await Promise.all(promises)
-      this.listFiles()
-      this.log('info', 'Concurrent update demo completed')
     },
 
     log(type, message) {
@@ -466,6 +621,7 @@ section h2 {
   display: flex;
   gap: 10px;
   margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 
 .tabs button {
@@ -537,6 +693,7 @@ section h2 {
 .btn.small { padding: 5px 10px; font-size: 0.8rem; }
 
 .btn:hover { opacity: 0.8; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .button-group {
   display: flex;
@@ -608,35 +765,6 @@ section h2 {
   color: #00ff88;
 }
 
-.demo-results {
-  margin-top: 20px;
-}
-
-.demo-results h4 {
-  margin-bottom: 10px;
-  color: #00d9ff;
-}
-
-.demo-result {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  background: #0f0f1a;
-  border-radius: 6px;
-  margin-bottom: 8px;
-}
-
-.badge {
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: bold;
-}
-
-.badge.success { background: #00ff88; color: #000; }
-.badge.error { background: #ff4444; color: #fff; }
-
 .log {
   max-height: 300px;
   overflow-y: auto;
@@ -673,4 +801,338 @@ section h2 {
 .log-entry.success .message { color: #00ff88; }
 .log-entry.error .message { color: #ff4444; }
 .log-entry.info .message { color: #aaa; }
+
+/* Simulation Styles */
+.simulations-tab {
+  min-height: 400px;
+}
+
+.sim-header {
+  text-align: center;
+  margin-bottom: 25px;
+}
+
+.sim-header h3 {
+  color: #00d9ff;
+  font-size: 1.4rem;
+  margin-bottom: 8px;
+}
+
+.sim-header p {
+  color: #888;
+}
+
+.sim-buttons {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 25px;
+}
+
+.sim-btn {
+  flex: 1;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 2px solid #333;
+  border-radius: 12px;
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.3s;
+  text-align: left;
+}
+
+.sim-btn:hover:not(:disabled) {
+  border-color: #00d9ff;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 20px rgba(0, 217, 255, 0.2);
+}
+
+.sim-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sim-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: #00d9ff;
+  color: #000;
+  border-radius: 50%;
+  font-size: 1.2rem;
+  font-weight: bold;
+  margin-bottom: 10px;
+}
+
+.sim-label {
+  display: block;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.sim-desc {
+  display: block;
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.sim-visualization {
+  background: #0f0f1a;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.sim-status-bar {
+  text-align: center;
+  margin-bottom: 20px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #1a1a2e;
+}
+
+.sim-status-bar .running {
+  color: #ffaa00;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sim-status-bar .completed {
+  color: #00ff88;
+}
+
+.pulse {
+  width: 10px;
+  height: 10px;
+  background: #ffaa00;
+  border-radius: 50%;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+.sim-servers {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+.sim-server {
+  flex: 1;
+  background: #1a1a2e;
+  border: 2px solid #333;
+  border-radius: 10px;
+  padding: 15px;
+  transition: all 0.3s;
+  position: relative;
+}
+
+.sim-server.idle { border-color: #333; }
+.sim-server.locking { border-color: #ffaa00; background: rgba(255, 170, 0, 0.1); }
+.sim-server.waiting { border-color: #ff6b6b; background: rgba(255, 107, 107, 0.1); }
+.sim-server.locked { border-color: #00ff88; background: rgba(0, 255, 136, 0.1); }
+.sim-server.updating { border-color: #00d9ff; background: rgba(0, 217, 255, 0.1); }
+.sim-server.working { border-color: #a855f7; background: rgba(168, 85, 247, 0.1); }
+.sim-server.failed { border-color: #ff4444; background: rgba(255, 68, 68, 0.1); }
+
+.srv-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.srv-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #666;
+  transition: all 0.3s;
+}
+
+.srv-indicator.idle { background: #666; }
+.srv-indicator.locking { background: #ffaa00; animation: pulse 0.5s infinite; }
+.srv-indicator.waiting { background: #ff6b6b; animation: pulse 0.8s infinite; }
+.srv-indicator.locked { background: #00ff88; }
+.srv-indicator.updating { background: #00d9ff; animation: pulse 0.3s infinite; }
+.srv-indicator.working { background: #a855f7; animation: pulse 0.5s infinite; }
+.srv-indicator.failed { background: #ff4444; }
+
+.srv-name {
+  font-weight: 600;
+  color: #fff;
+}
+
+.srv-status {
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.srv-lock {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.lock-icon {
+  background: #00ff88;
+  color: #000;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  animation: lockPulse 1s infinite;
+}
+
+@keyframes lockPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(0, 255, 136, 0); }
+}
+
+.sim-file {
+  background: #1a1a2e;
+  border: 2px solid #333;
+  border-radius: 10px;
+  padding: 15px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.file-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.file-icon {
+  background: #00d9ff;
+  color: #000;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.file-name {
+  font-size: 1.1rem;
+  color: #fff;
+  font-family: monospace;
+}
+
+.file-version {
+  color: #888;
+  font-size: 0.9rem;
+  margin-bottom: 5px;
+}
+
+.file-lock-status {
+  display: inline-block;
+  padding: 5px 15px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  background: #333;
+  color: #888;
+}
+
+.file-lock-status.locked {
+  background: rgba(0, 255, 136, 0.2);
+  color: #00ff88;
+  border: 1px solid #00ff88;
+}
+
+.sim-timeline {
+  background: #1a1a2e;
+  border-radius: 10px;
+  padding: 15px;
+}
+
+.sim-timeline h4 {
+  color: #00d9ff;
+  margin-bottom: 15px;
+}
+
+.timeline-events {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.timeline-event {
+  display: grid;
+  grid-template-columns: 90px 80px 80px 1fr;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: #0f0f1a;
+  align-items: center;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.timeline-event.srv1 { border-left: 3px solid #00d9ff; }
+.timeline-event.srv2 { border-left: 3px solid #00ff88; }
+.timeline-event.srv3 { border-left: 3px solid #a855f7; }
+.timeline-event.system { border-left: 3px solid #ffaa00; }
+
+.event-time {
+  font-family: monospace;
+  color: #666;
+  font-size: 0.8rem;
+}
+
+.event-server {
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.event-action {
+  text-align: center;
+}
+
+.action-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.action-badge.init { background: #333; color: #fff; }
+.action-badge.create { background: #00d9ff; color: #000; }
+.action-badge.lock { background: #ffaa00; color: #000; }
+.action-badge.unlock { background: #00ff88; color: #000; }
+.action-badge.update { background: #a855f7; color: #fff; }
+.action-badge.work { background: #666; color: #fff; }
+.action-badge.complete { background: #00ff88; color: #000; }
+.action-badge.error { background: #ff4444; color: #fff; }
+
+.event-message {
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.timeline-event.success .event-message { color: #00ff88; }
+.timeline-event.failed .event-message { color: #ff4444; }
+.timeline-event.waiting .event-message { color: #ff6b6b; }
+.timeline-event.pending .event-message { color: #ffaa00; }
+
+.event-details {
+  grid-column: 1 / -1;
+  color: #666;
+  font-size: 0.8rem;
+  padding-left: 90px;
+  margin-top: -5px;
+}
 </style>

@@ -11,15 +11,18 @@ import (
 	"time"
 
 	"github.com/cmpe541/file-metadata-manager/internal/metadata"
+	"github.com/cmpe541/file-metadata-manager/internal/simulation"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // Server handles both gRPC and HTTP requests
 type Server struct {
-	store    *metadata.Store
-	nodeID   string
-	grpcPort int
-	httpPort int
+	store     *metadata.Store
+	nodeID    string
+	grpcPort  int
+	httpPort  int
+	client    *clientv3.Client
+	simRunner *simulation.Runner
 }
 
 // NewServer creates a new server instance
@@ -30,10 +33,12 @@ func NewServer(client *clientv3.Client, nodeID string, grpcPort, httpPort int) (
 	}
 
 	return &Server{
-		store:    store,
-		nodeID:   nodeID,
-		grpcPort: grpcPort,
-		httpPort: httpPort,
+		store:     store,
+		nodeID:    nodeID,
+		grpcPort:  grpcPort,
+		httpPort:  httpPort,
+		client:    client,
+		simRunner: simulation.NewRunner(client),
 	}, nil
 }
 
@@ -85,6 +90,11 @@ func (s *Server) startHTTPServer(ctx context.Context) error {
 	mux.HandleFunc("/api/locks/status/", corsHandler(s.handleLockStatus))
 	mux.HandleFunc("/api/node", corsHandler(s.handleNodeInfo))
 	mux.HandleFunc("/health", corsHandler(s.handleHealth))
+
+	// Simulation routes (SSE endpoints)
+	mux.HandleFunc("/api/simulation/1", s.handleSimulation1)
+	mux.HandleFunc("/api/simulation/2", s.handleSimulation2)
+	mux.HandleFunc("/api/simulation/3", s.handleSimulation3)
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.httpPort),
@@ -346,5 +356,126 @@ func (s *Server) handleLockStatus(w http.ResponseWriter, r *http.Request) {
 
 // Close closes the server and releases resources
 func (s *Server) Close() error {
+	if s.simRunner != nil {
+		s.simRunner.Cleanup()
+	}
 	return s.store.Close()
+}
+
+// SSE helper to set up Server-Sent Events response
+func setupSSE(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
+// handleSimulation1 runs simulation 1 with SSE events
+func (s *Server) handleSimulation1(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 1", s.nodeID)
+	err := s.simRunner.RunSimulation1(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 1 error: %v", s.nodeID, err)
+	}
+
+	// Send end event
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
+}
+
+// handleSimulation2 runs simulation 2 with SSE events
+func (s *Server) handleSimulation2(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 2", s.nodeID)
+	err := s.simRunner.RunSimulation2(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 2 error: %v", s.nodeID, err)
+	}
+
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
+}
+
+// handleSimulation3 runs simulation 3 with SSE events
+func (s *Server) handleSimulation3(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	setupSSE(w)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	callback := func(event simulation.Event) {
+		data := simulation.EventToJSON(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	log.Printf("[%s] Starting Simulation 3", s.nodeID)
+	err := s.simRunner.RunSimulation3(ctx, callback)
+	if err != nil {
+		log.Printf("[%s] Simulation 3 error: %v", s.nodeID, err)
+	}
+
+	fmt.Fprintf(w, "data: {\"action\":\"end\"}\n\n")
+	flusher.Flush()
 }
